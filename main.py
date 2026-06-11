@@ -15,7 +15,12 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
-CHANNEL_USERNAME = "@harrypotter_uzbek" 
+# Yangilangan majburiy obuna kanallari ro'yxati
+REQUIRED_CHANNELS = [
+    {"name": "Garri Potter Uzbek", "username": "@HarryPotter_Uzbek", "url": "https://t.me/HarryPotter_Uzbek"},
+    {"name": "Premium Starlight", "username": "@premium_starlight", "url": "https://t.me/premium_starlight"}
+]
+CHANNEL_USERNAME = "@HarryPotter_Uzbek" 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -27,7 +32,7 @@ class AdminState(StatesGroup):
     waiting_for_admin_video = State()
     waiting_for_admin_book = State()  
 
-# buttons
+# --- KLAVIATURA TUGMALARI ---
 def get_main_keyboard():
     kb = [
         [KeyboardButton(text="🎬 Kino ko'rish"), KeyboardButton(text="📚 Kitob o'qish")],
@@ -36,7 +41,7 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# inline menu admin uchun
+# Admin inline menu
 def get_admin_inline_keyboard():
     kb = [
         [InlineKeyboardButton(text="📊 Top Taklifchilar (Top 10)", callback_data="admin_top_10")],
@@ -45,7 +50,29 @@ def get_admin_inline_keyboard():
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# start handler
+# --- MAJBURIY OBUNANI TEKSHIRISH FUNKSIYASI ---
+async def check_sub(user_id: int) -> bool:
+    """Foydalanuvchi barcha majburiy kanallarga a'zo ekanligini tekshiradi"""
+    for channel in REQUIRED_CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel["username"], user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception as e:
+            print(f"❌ Kanal tekshirishda xatolik ({channel['username']}): {e}")
+            return False
+    return True
+
+# --- MAJBURIY OBUNA INLINE MENYUSI ---
+def get_sub_keyboard():
+    kb = []
+    for channel in REQUIRED_CHANNELS:
+        kb.append([InlineKeyboardButton(text=f"📣 {channel['name']}", url=channel['url'])])
+    kb.append([InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_subscription")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+# --- /START BUYRUG'I ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     user_id = message.from_user.id
@@ -65,16 +92,45 @@ async def start_cmd(message: types.Message):
     except Exception as e:
         print(f"❌ Supabase start xatoligi: {e}")
 
+    # Obunani tekshirish
+    if not await check_sub(user_id):
+        await message.answer(
+            f"Salom, {full_name}! ⚡\nBotdan to'liq foydalanish uchun homiy kanallarimizga obuna bo'lishingiz shart. "
+            f"Iltimos, quyidagi kanallarga a'zo bo'lib, so'ng tekshirish tugmasini bosing:",
+            reply_markup=get_sub_keyboard()
+        )
+        return
+
     await message.answer(
         f"Salom, {full_name}! Garri Potter virtual olamiga xush kelibsiz! ✨\n"
         f"Kino ko'rish yoki kitob o'qish uchun quyidagi tugmalardan foydalaning.",
         reply_markup=get_main_keyboard()
     )
 
-# invite friends hendler
+# Obunani inline tugma orqali tekshirish handler'i
+@dp.callback_query(F.data == "check_subscription")
+async def check_subscription_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if await check_sub(user_id):
+        await callback.answer("🎉 Rahmat! Obuna muvaffaqiyatli tekshirildi.", show_alert=True)
+        await callback.message.delete()
+        await callback.message.answer(
+            "✨ Garri Potter virtual olamiga xush kelibsiz!\nKerakli bo'limni tanlang:",
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        await callback.answer("❌ Siz hali barcha kanallarga a'zo bo'lmadingiz! Iltimos, qaytadan tekshiring.", show_alert=True)
+
+
+# --- DO'STLARNI TAKLIF QILISH TUGMASI ---
 @dp.message(F.text == "👥 Do'stlarni taklif qilish")
 async def invite_friends(message: types.Message):
     user_id = message.from_user.id
+    
+    if not await check_sub(user_id):
+        await message.answer("⚠️ Botdan foydalanish uchun kanallarga a'zo bo'lishingiz shart:", reply_markup=get_sub_keyboard())
+        return
+
     try:
         user_data = supabase.table("users").select("*").eq("telegram_id", user_id).execute()
         
@@ -103,7 +159,8 @@ async def invite_friends(message: types.Message):
         await message.answer("⚠️ Havola bilan ishlashda xatolik yuz berdi. Bot kanalda admin ekanligini tekshiring.")
         print(f"❌ Taklif xatoligi: {e}")
 
-# kuzatuvhci handler
+
+# --- KANAL HARAKATLARINI KUZATISH ---
 @dp.chat_member()
 async def on_user_join_or_left(event: ChatMemberUpdated):
     invite_link_used = event.invite_link
@@ -138,15 +195,24 @@ async def on_user_join_or_left(event: ChatMemberUpdated):
                     except Exception: pass
             except Exception as e: print(f"❌ Chiqishni hisoblashda xatolik: {e}")
 
-# movie section
+
+# --- KINO KO'RISH BO'LIMI ---
 @dp.message(F.text == "🎬 Kino ko'rish")
 async def choose_quality(message: types.Message):
+    if not await check_sub(message.from_user.id):
+        await message.answer("⚠️ Botdan foydalanish uchun kanallarga a'zo bo'lishingiz shart:", reply_markup=get_sub_keyboard())
+        return
+
     kb = [[InlineKeyboardButton(text="📱 720p (O'rtacha sifat)", callback_data="quality_720p HD"), InlineKeyboardButton(text="🖥️ 1080p (Yuqori sifat)", callback_data="quality_1080p HD")]]
     keyboard = InlineKeyboardMarkup(inline_keyboard=kb)
     await message.answer("Kino tomosha qilish uchun oʻzingizga maʼqul boʻlgan video sifatini tanlang: 👇", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("quality_"))
 async def show_movies_by_quality(callback: types.CallbackQuery):
+    if not await check_sub(callback.from_user.id):
+        await callback.answer("⚠️ Avval kanallarga a'zo bo'ling!", show_alert=True)
+        return
+
     selected_quality = callback.data.split("_")[1]
     await callback.message.edit_text(f"⏳ {selected_quality} sifatidagi Garri Potter qismlari yuklanmoqda...")
     try:
@@ -174,6 +240,10 @@ async def back_to_quality_menu(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("sendmovie_"))
 async def send_movie_to_user(callback: types.CallbackQuery):
+    if not await check_sub(callback.from_user.id):
+        await callback.answer("⚠️ Avval kanallarga a'zo bo'ling!", show_alert=True)
+        return
+
     data_parts = callback.data.split("_")
     movie_id = data_parts[1]
     current_quality = data_parts[2] if len(data_parts) > 2 else "720p HD"
@@ -184,7 +254,6 @@ async def send_movie_to_user(callback: types.CallbackQuery):
         if movie_data.data:
             movie = movie_data.data[0]
             
-        
             back_kb = [[InlineKeyboardButton(text="⬅️ Kinolar ro'yxatiga qaytish", callback_data=f"quality_{current_quality}")]]
             back_markup = InlineKeyboardMarkup(inline_keyboard=back_kb)
             
@@ -199,12 +268,16 @@ async def send_movie_to_user(callback: types.CallbackQuery):
         print(f"❌ KINONI FOYDALANUVCHIGA YUBORISHDA XATOLIK: {e}")
         await callback.message.answer(f"❌ Kinoni yuborishda texnik xatolik yuz berdi.\n\nSababi: {e}")
 
-# books section
+
+# --- KITOB O'QISH BO'LIMI ---
 @dp.message(F.text == "📚 Kitob o'qish")
 async def show_books(message: types.Message):
+    if not await check_sub(message.from_user.id):
+        await message.answer("⚠️ Botdan foydalanish uchun kanallarga a'zo bo'lishingiz shart:", reply_markup=get_sub_keyboard())
+        return
+
     await message.answer("⏳ Garri Potter kitoblari ro'yxati yuklanmoqda...")
     await list_books_interface(message, is_edit=False)
-
 
 async def list_books_interface(message_obj, is_edit=False):
     try:
@@ -234,13 +307,16 @@ async def list_books_interface(message_obj, is_edit=False):
 
 @dp.callback_query(F.data.startswith("sendbook_"))
 async def send_book_to_user(callback: types.CallbackQuery):
+    if not await check_sub(callback.from_user.id):
+        await callback.answer("⚠️ Avval kanallarga a'zo bo'ling!", show_alert=True)
+        return
+
     book_id = callback.data.split("_")[1]
     try:
         book_data = supabase.table("books").select("*").eq("id", book_id).execute()
         if book_data.data:
             book = book_data.data[0]
             
-           
             back_kb = [[InlineKeyboardButton(text="⬅️ Kitoblar ro'yxatiga qaytish", callback_data="back_to_books")]]
             back_markup = InlineKeyboardMarkup(inline_keyboard=back_kb)
             
@@ -258,12 +334,14 @@ async def send_book_to_user(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_books")
 async def back_to_books_callback(callback: types.CallbackQuery):
+    if not await check_sub(callback.from_user.id):
+        await callback.answer("⚠️ Avval kanallarga a'zo bo'ling!", show_alert=True)
+        return
     await callback.answer()
     await list_books_interface(callback.message, is_edit=True)
 
 
-# admin panel section
-
+# --- 🔒 ADMIN PANEL BO'LIMI ---
 @dp.message(F.text == "🔒 Admin Panel")
 async def admin_auth(message: types.Message, state: FSMContext):
     await message.answer("🔑 Admin panel parolini kiriting:")
@@ -293,10 +371,7 @@ async def admin_show_top_10(callback: types.CallbackQuery):
         else:
             text += "Hozircha hech kim odam taklif qilmadi."
         
-    
-        kb = [
-            [InlineKeyboardButton(text="⬅️ Admin Panelga qaytish", callback_data="admin_home")]
-        ]
+        kb = [[InlineKeyboardButton(text="⬅️ Admin Panelga qaytish", callback_data="admin_home")]]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     except Exception as e:
         print(f"❌ Admin top 10 yuklash xatoligi: {e}")
@@ -310,23 +385,21 @@ async def back_to_admin_home(callback: types.CallbackQuery):
         reply_markup=get_admin_inline_keyboard()
     )
 
-# get file id movie
 @dp.callback_query(F.data == "admin_get_file_id")
 async def admin_trigger_video_mode(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(AdminState.waiting_for_admin_video)
     await callback.message.edit_text(
-        "📥 **Kino ID olish rejimi yoqildi!**\n\n.",
+        "📥 **Kino ID olish rejimi yoqildi!**\n\nKanalingizdan videoni shu yerga forward qiling.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_cancel")]])
     )
 
-# get file id book
 @dp.callback_query(F.data == "admin_get_book_id")
 async def admin_trigger_book_mode(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(AdminState.waiting_for_admin_book)
     await callback.message.edit_text(
-        "📥 **Kitob (PDF) ID olish rejimi yoqildi!**\n\n",
+        "📥 **Kitob (PDF) ID olish rejimi yoqildi!**\n\nHujjatni (PDF) shu yerga forward qiling.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_cancel")]])
     )
 
@@ -339,14 +412,11 @@ async def admin_cancel_mode(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=get_admin_inline_keyboard()
     )
 
-
 @dp.message(AdminState.waiting_for_admin_video, F.video)
 async def process_admin_video(message: types.Message, state: FSMContext):
     video_file_id = message.video.file_id
     await message.answer(
-        f"✅ **Kino ID muvaffaqiyatli olindi!**\n\n"
-        f"Kino ID:\n\n"
-        f"`{video_file_id}`",
+        f"✅ **Kino ID muvaffaqiyatli olindi!**\n\nKino ID:\n\n`{video_file_id}`",
         parse_mode="Markdown",
         reply_markup=get_admin_inline_keyboard()
     )
@@ -356,15 +426,14 @@ async def process_admin_video(message: types.Message, state: FSMContext):
 async def process_admin_book(message: types.Message, state: FSMContext):
     document_file_id = message.document.file_id
     await message.answer(
-        f"✅ **Kitob (PDF) ID muvaffaqiyatli olindi!**\n\n"
-        f"Kitob ID:\n\n"
-        f"`{document_file_id}`",
+        f"✅ **Kitob (PDF) ID muvaffaqiyatli olindi!**\n\nKitob ID:\n\n`{document_file_id}`",
         parse_mode="Markdown",
         reply_markup=get_admin_inline_keyboard()
     )
     await state.clear()
 
-# start 
+
+# --- BOTNI ISHGA TUSHIRISH ---
 async def main():
     print("Garri Potter boti muvaffaqiyatli ishga tushdi...")
     await dp.start_polling(bot, allowed_updates=["message", "chat_member", "my_chat_member", "callback_query"], handle_signals=False)
